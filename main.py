@@ -35,9 +35,16 @@ def check_config_exists():
         return False
     return True
 
-def fetch_granola_documents(token):
+def fetch_granola_documents(token, limit=100):
     """
-    Fetch documents from Granola API
+    Fetch ALL documents from Granola API with pagination
+
+    Args:
+        token: Access token
+        limit: Number of documents to fetch per request (default 100)
+
+    Returns:
+        dict: Combined response with all documents
     """
     url = "https://api.granola.ai/v2/get-documents"
     headers = {
@@ -47,19 +54,120 @@ def fetch_granola_documents(token):
         "User-Agent": "Granola/5.354.0",
         "X-Client-Version": "5.354.0"
     }
-    data = {
-        "limit": 100,
-        "offset": 0,
-        "include_last_viewed_panel": True
+
+    all_documents = []
+    offset = 0
+
+    while True:
+        data = {
+            "limit": limit,
+            "offset": offset,
+            "include_last_viewed_panel": True
+        }
+
+        try:
+            logger.info(f"Fetching documents: offset={offset}, limit={limit}")
+            response = requests.post(url, headers=headers, json=data)
+            response.raise_for_status()
+            result = response.json()
+
+            docs = result.get("docs", [])
+            if not docs:
+                # No more documents
+                break
+
+            all_documents.extend(docs)
+            logger.info(f"Fetched {len(docs)} documents (total so far: {len(all_documents)})")
+
+            # If we got fewer documents than the limit, we've reached the end
+            if len(docs) < limit:
+                break
+
+            offset += limit
+
+        except Exception as e:
+            logger.error(f"Error fetching documents at offset {offset}: {str(e)}")
+            if offset == 0:
+                # Failed on first request
+                return None
+            else:
+                # Return what we have so far
+                break
+
+    logger.info(f"Total documents fetched: {len(all_documents)}")
+    return {"docs": all_documents}
+
+def fetch_workspaces(token):
+    """
+    Fetch workspaces from Granola API
+
+    Args:
+        token: Access token
+
+    Returns:
+        dict: Workspaces data or None if failed
+    """
+    url = "https://api.granola.ai/v1/get-workspaces"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "User-Agent": "Granola/5.354.0",
+        "X-Client-Version": "5.354.0"
     }
 
     try:
-        response = requests.post(url, headers=headers, json=data)
+        response = requests.post(url, headers=headers, json={})
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        logger.error(f"Error fetching documents: {str(e)}")
+        logger.error(f"Error fetching workspaces: {str(e)}")
         return None
+
+def fetch_document_lists(token):
+    """
+    Fetch document lists (folders) from Granola API
+
+    Args:
+        token: Access token
+
+    Returns:
+        dict: Document lists data or None if failed
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "User-Agent": "Granola/5.354.0",
+        "X-Client-Version": "5.354.0"
+    }
+
+    # Try v2 endpoint first, then v1
+    endpoints = [
+        "https://api.granola.ai/v2/get-document-lists",
+        "https://api.granola.ai/v1/get-document-lists"
+    ]
+
+    for url in endpoints:
+        try:
+            logger.debug(f"Trying endpoint: {url}")
+            response = requests.post(url, headers=headers, json={})
+            response.raise_for_status()
+            logger.info(f"Successfully fetched document lists from {url}")
+            return response.json()
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                logger.debug(f"Endpoint {url} not found, trying next...")
+                continue
+            else:
+                logger.error(f"Error fetching document lists from {url}: {str(e)}")
+                continue
+        except Exception as e:
+            logger.error(f"Error fetching document lists from {url}: {str(e)}")
+            continue
+
+    logger.warning("All document list endpoints failed")
+    return None
 
 def fetch_document_transcript(token, document_id):
     """
@@ -210,8 +318,109 @@ def main():
         logger.error("Failed to obtain access token. Exiting.")
         return
 
-    logger.info("Access token obtained successfully. Fetching documents from Granola API...")
+    logger.info("Fetching workspaces from Granola API...")
+    workspaces_response = fetch_workspaces(access_token)
+
+    # Create workspace ID to name mapping
+    workspace_map = {}
+    if workspaces_response:
+        logger.info(f"Successfully fetched workspaces")
+        # Save workspaces response for reference
+        workspaces_path = output_path / "workspaces.json"
+        try:
+            with open(workspaces_path, 'w', encoding='utf-8') as f:
+                json.dump(workspaces_response, f, indent=2)
+            logger.info(f"Workspaces data saved to {workspaces_path}")
+        except Exception as e:
+            logger.error(f"Failed to write workspaces to file: {str(e)}")
+
+        # Build workspace map
+        if isinstance(workspaces_response, list):
+            for workspace in workspaces_response:
+                workspace_id = workspace.get("id")
+                workspace_name = workspace.get("name")
+                if workspace_id:
+                    workspace_map[workspace_id] = workspace_name
+        elif isinstance(workspaces_response, dict) and "workspaces" in workspaces_response:
+            for workspace in workspaces_response["workspaces"]:
+                workspace_id = workspace.get("id")
+                workspace_name = workspace.get("name")
+                if workspace_id:
+                    workspace_map[workspace_id] = workspace_name
+    else:
+        logger.warning("Could not fetch workspaces - workspace names will not be included in metadata")
+
+    logger.info("Fetching document lists (folders) from Granola API...")
+    document_lists_response = fetch_document_lists(access_token)
+
+    # Create mapping of document ID to lists it belongs to
+    document_to_lists_map = {}
+    list_id_to_name_map = {}
+
+    if document_lists_response:
+        logger.info(f"Successfully fetched document lists")
+        # Save document lists response for reference
+        document_lists_path = output_path / "document_lists.json"
+        try:
+            with open(document_lists_path, 'w', encoding='utf-8') as f:
+                json.dump(document_lists_response, f, indent=2)
+            logger.info(f"Document lists data saved to {document_lists_path}")
+        except Exception as e:
+            logger.error(f"Failed to write document lists to file: {str(e)}")
+
+        # Build document-to-lists mapping
+        lists = []
+        if isinstance(document_lists_response, list):
+            lists = document_lists_response
+        elif isinstance(document_lists_response, dict):
+            if "lists" in document_lists_response:
+                lists = document_lists_response["lists"]
+            elif "document_lists" in document_lists_response:
+                lists = document_lists_response["document_lists"]
+
+        for doc_list in lists:
+            list_id = doc_list.get("id")
+            list_name = doc_list.get("name") or doc_list.get("title")
+
+            if list_id and list_name:
+                list_id_to_name_map[list_id] = list_name
+
+            # Get documents in this list
+            documents_in_list = doc_list.get("documents", [])
+            if not documents_in_list:
+                # Try other possible field names
+                documents_in_list = doc_list.get("document_ids", [])
+
+            for doc in documents_in_list:
+                # Handle both dict and string formats
+                if isinstance(doc, dict):
+                    doc_id = doc.get("id") or doc.get("document_id")
+                else:
+                    doc_id = doc
+
+                if doc_id:
+                    if doc_id not in document_to_lists_map:
+                        document_to_lists_map[doc_id] = []
+                    document_to_lists_map[doc_id].append({
+                        "id": list_id,
+                        "name": list_name
+                    })
+
+        logger.info(f"Found {len(lists)} document lists with {len(document_to_lists_map)} documents organized")
+    else:
+        logger.warning("Could not fetch document lists - folder information will not be included in metadata")
+
+    logger.info("Fetching documents from Granola API...")
     api_response = fetch_granola_documents(access_token)
+
+    # Write the API response JSON to a file named "granola_api_response.json" in the output directory
+    api_response_path = output_path / "granola_api_response.json"
+    try:
+        with open(api_response_path, 'w', encoding='utf-8') as f:
+            json.dump(api_response, f, indent=2)
+        logger.info(f"API response saved to {api_response_path}")
+    except Exception as e:
+        logger.error(f"Failed to write API response to file: {str(e)}")
 
     if not api_response:
         logger.error("Failed to fetch documents - API response is empty")
@@ -253,11 +462,15 @@ def main():
                     json.dump(transcript_data, f, indent=2)
                 logger.debug(f"Saved raw transcript JSON to: {transcript_json_path}")
             
+            workspace_id = doc.get("workspace_id")
             metadata = {
                 "document_id": doc_id,
                 "title": title,
                 "created_at": doc.get("created_at"),
                 "updated_at": doc.get("updated_at"),
+                "workspace_id": workspace_id,
+                "workspace_name": workspace_map.get(workspace_id) if workspace_id else None,
+                "folders": document_to_lists_map.get(doc_id, []),
                 "meeting_date": None,
                 "sources": []
             }
