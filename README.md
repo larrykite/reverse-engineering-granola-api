@@ -26,9 +26,12 @@ Granola uses WorkOS for authentication with refresh token rotation.
    - Request: `client_id`, `grant_type: "refresh_token"`, current `refresh_token`
    - Response: new `access_token`, rotated `refresh_token`, `expires_in` (3600 seconds)
 
-3. **Token Rotation**
-   - Each exchange invalidates the old refresh token and issues a new one
-   - Refresh tokens are single-use (prevents token replay attacks)
+3. **Token Rotation (IMPORTANT)**
+   - **Refresh tokens CANNOT be reused** - each token is valid for ONE use only
+   - Each exchange automatically invalidates the old refresh token and issues a new one
+   - You MUST save and use the new refresh token from each response for the next request
+   - Attempting to reuse an old refresh token will result in authentication failure
+   - This rotation mechanism prevents token replay attacks
    - Access tokens expire after 1 hour
 
 ## Implementation Files
@@ -67,11 +70,19 @@ Exchanges a refresh token for a new access token using WorkOS authentication.
 ```json
 {
   "access_token": "string", // New JWT access token
-  "refresh_token": "string", // New refresh token (rotated)
+  "refresh_token": "string", // New refresh token (rotated - MUST be saved for next use)
   "expires_in": 3600, // Token lifetime in seconds
   "token_type": "Bearer"
 }
 ```
+
+**IMPORTANT - Refresh Token Rotation:**
+
+- The `refresh_token` in the response is a **NEW** token that replaces the old one
+- The old refresh token is immediately invalidated and CANNOT be reused
+- You MUST save this new refresh token and use it for the next authentication request
+- Failure to update the refresh token will cause subsequent authentication attempts to fail
+- This is a security feature called "refresh token rotation" that prevents token replay attacks
 
 ---
 

@@ -1,79 +1,143 @@
-# Obtaining Granola Refresh Token
+# Obtaining Granola Refresh Token and Client ID
 
-Guide for extracting refresh tokens from Granola on macOS for API reverse engineering.
+Guide for extracting refresh tokens and `client_id` from Granola on macOS for API reverse engineering.
 
-## Token Extraction Methods
+## Quick Start (Recommended Method)
 
-### Method 1: Application Data Directory
+### Step 1: Login to Granola
 
-Extract tokens directly from the Granola desktop application data.
+Launch the Granola app and log in to create a valid session.
 
-**Location:**
+### Step 2: Extract Refresh Token and Client ID
 
-```bash
-~/Library/Application Support/Granola/
-```
+The refresh token and `client_id` are stored in `supabase.json` in Granola's application data directory.
 
-**Inspect application storage:**
+**View the file:**
 
 ```bash
-cd ~/Library/Application\ Support/Granola/
-find . -type f -name "*.json" -o -name "*.db"
+cat ~/Library/Application\ Support/Granola/supabase.json
 ```
 
-**Common token storage locations:**
+**File structure:**
 
-- `Local Storage/leveldb/*.ldb`
-- `IndexedDB/`
-- `tokens.json`
-- `session.json`
-- `auth.json`
+```json
+{
+  "workos_tokens": "{\"access_token\":\"<REDACTED>\",\"expires_in\":21599,\"refresh_token\":\"<REDACTED>\",\"token_type\":\"Bearer\",\"obtained_at\":1763065919448,\"session_id\":\"<REDACTED>\",\"external_id\":\"<REDACTED>\"}",
+  "session_id": "<REDACTED>",
+  "user_info": "{...}"
+}
+```
 
-**Extract token from LevelDB:**
+**Note:** The `workos_tokens` field contains a JSON string (escaped), not a JSON object.
+
+**Extract refresh_token using jq:**
 
 ```bash
-strings Local\ Storage/leveldb/*.ldb | grep -E 'refresh_token|access_token'
+cat ~/Library/Application\ Support/Granola/supabase.json | jq -r '.workos_tokens | fromjson | .refresh_token'
 ```
 
-### Method 2: Network Traffic Interception
-
-Capture authentication requests using a proxy.
-
-**Using mitmproxy:**
+**Extract client_id from the JWT access token:**
 
 ```bash
-# Install mitmproxy
-brew install mitmproxy
-
-# Start proxy
-mitmproxy -p 8080
-
-# Configure system proxy
-networksetup -setwebproxy Wi-Fi 127.0.0.1 8080
-networksetup -setsecurewebproxy Wi-Fi 127.0.0.1 8080
-
-# Launch Granola application
-# Filter for authentication endpoint
-# Target: api.workos.com/user_management/authenticate
-
-# Disable proxy after capture
-networksetup -setwebproxystate Wi-Fi off
-networksetup -setsecurewebproxystate Wi-Fi off
+cat ~/Library/Application\ Support/Granola/supabase.json | jq -r '.workos_tokens | fromjson | .access_token' | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.iss' | grep -o 'client_[^"]*'
 ```
 
-**Using Charles Proxy:**
+**Or extract manually:**
+
+1. Copy the value of the `workos_tokens` field (it's a JSON string)
+2. Parse it as JSON to extract:
+   - `refresh_token` - looks like: `22oWVolI9TRlthI2J5asHbfyx`
+   - `access_token` - a JWT token
+3. Decode the JWT `access_token` (base64 decode the middle section)
+4. Look at the `iss` (issuer) field - it contains the `client_id` at the end
+
+Example `iss` field:
+```
+https://auth.granola.ai/user_management/client_<REDACTED>
+```
+
+The `client_id` is: `client_<REDACTED>`
+
+### Step 3: Preserve Your Session
+
+**IMPORTANT:** To prevent the refresh token from expiring when Granola starts next time:
+
+1. **Login to your Granola app** (to generate a valid session)
+2. **Extract the refresh token and client_id** from `supabase.json` (as shown above)
+3. **Quit Granola completely** (Cmd+Q)
+4. **Remove Application Support data** to prevent session conflicts:
+   ```bash
+   rm -rf ~/Library/Application\ Support/Granola/
+   ```
+
+**Why this works:** Once you remove the Granola app data, the app can't invalidate your extracted refresh token when it starts up again. Your script will keep the token alive through continuous rotation.
+
+### Step 4: Configure Your Script
+
+Create `config.json`:
+
+```json
+{
+  "refresh_token": "your-refresh-token-from-supabase.json",
+  "client_id": "client_<REDACTED>"
+}
+```
+
+### Step 5: Keep Session Alive
+
+**CRITICAL:** Refresh the token every ~5 minutes to keep the session alive.
+
+**Why ~5 minutes?** While access tokens last 1 hour, refreshing frequently ensures:
+- The refresh token doesn't expire from inactivity
+- You always have a fresh, valid token
+- Your session stays active even if Granola's backend has shorter session timeouts
+
+**Run your sync script regularly:**
 
 ```bash
-# Install Charles
-brew install --cask charles
+# Run once
+python3 main.py /path/to/output
 
-# Launch Charles and configure SSL proxying
-# Enable macOS proxy in Charles (Proxy > macOS Proxy)
-# Filter for: api.workos.com
-# Launch Granola and authenticate
+# Or schedule with cron (every 5 minutes)
+*/5 * * * * cd /path/to/repo && python3 main.py /path/to/output
 ```
 
-### Method 3: Browser Developer Tools
+The `token_manager.py` automatically:
+- Rotates the refresh token on each use
+- Saves the new refresh token back to `config.json`
+- Keeps your session alive indefinitely
+
+---
+
+## Token Lifecycle
+
+**CRITICAL: Refresh tokens CANNOT be reused**
+
+- Refresh tokens are **single-use only** and auto-rotated with each authentication request
+- Each refresh invalidates the old token and returns a new one
+- The `token_manager.py` automatically updates `config.json` with new refresh tokens
+- Access tokens expire after 3600 seconds (1 hour)
+- **The script should run every ~5 minutes** to keep the session alive and prevent token expiration
+- If you don't rotate the refresh token regularly, it may expire and require re-extraction
+
+---
+
+## Alternative Token Extraction Methods
+
+### Method 1: supabase.json File (Recommended)
+
+The tokens are always stored in:
+
+```bash
+~/Library/Application Support/Granola/supabase.json
+```
+
+This file contains:
+- `workos_tokens` - A JSON string (escaped) containing `refresh_token`, `access_token`, and other auth data
+- `session_id` - Current session ID
+- `user_info` - User profile information
+
+### Method 2: Browser Developer Tools
 
 For web-based authentication flows.
 
@@ -85,6 +149,8 @@ For web-based authentication flows.
 # Network tab > Filter: authenticate or workos
 # Locate authentication response containing tokens
 ```
+
+---
 
 ## Configuration
 
@@ -98,23 +164,19 @@ cp config.json.template config.json
 
 ```json
 {
-  "refresh_token": "<refresh-token-value>",
-  "client_id": "client_[identifier]"
+  "refresh_token": "<refresh-token-from-supabase.json>",
+  "client_id": "client_<REDACTED>"
 }
 ```
 
-**Extract client_id:**
-
-- Found in authentication request payload
-- Located in response alongside tokens
-- Typically prefixed with `client_`
+---
 
 ## Verification
 
 **Test token validity:**
 
 ```bash
-python main.py /path/to/output
+python3 main.py /path/to/output
 ```
 
 **Expected output:**
@@ -123,32 +185,30 @@ python main.py /path/to/output
 Successfully obtained access token (expires in 3600 seconds)
 ```
 
-## Token Lifecycle
-
-- Refresh tokens are single-use and auto-rotated
-- Application automatically updates `config.json` with new tokens
-- Access tokens expire after 3600 seconds
-- Refresh tokens trigger automatic renewal
+---
 
 ## Common Issues
 
 **Token already exchanged:**
 
-- Extract new refresh token using methods above
-- Update `config.json` with fresh token
+- The refresh token was already used and is now invalid
+- Extract a fresh refresh token from `supabase.json` (requires logging into Granola again)
+- Update `config.json` with the new token
 
 **Invalid grant:**
 
 - Token expired or revoked
-- Re-authenticate and extract new token
+- Re-authenticate to Granola and extract new token from `supabase.json`
+- Follow Step 3 to preserve your session
 
 **Missing client_id:**
 
 - Verify `config.json` contains both `refresh_token` and `client_id`
-- Extract from same authentication request
+- Extract `client_id` from the JWT token in `supabase.json` as shown above
 
-## Security
+**Session keeps expiring:**
 
-- Exclude `config.json` from version control
-- Tokens grant full API access
-- Revoke compromised tokens by logging out of Granola
+- Make sure you're refreshing the token every ~5 minutes
+- Verify you removed the `~/Library/Application Support/Granola/` directory after extraction
+- Check that `token_manager.py` is saving the new refresh token to `config.json`
+
