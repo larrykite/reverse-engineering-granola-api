@@ -22,3 +22,5 @@ config.json
 
 # Logs
 *.log
+.DS_Store
+granola_notes*/
