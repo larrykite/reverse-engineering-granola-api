@@ -1,11 +1,13 @@
 import argparse
-import logging
-from pathlib import Path
-import traceback
+import base64
 import json
+import logging
 import os
+import re
 import requests
+import traceback
 from datetime import datetime
+from pathlib import Path
 from token_manager import TokenManager
 
 logging.basicConfig(
@@ -18,22 +20,132 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def check_config_exists():
+SUPABASE_PATH = Path.home() / "Library" / "Application Support" / "Granola" / "supabase.json"
+CONFIG_PATH = Path("config.json")
+
+
+def auto_extract_tokens():
     """
-    Check if config.json exists, if not provide helpful error message
+    Attempt to extract refresh_token and client_id from Granola's supabase.json
 
     Returns:
-        bool: True if config exists, False otherwise
+        tuple: (refresh_token, client_id) or (None, None) if extraction fails
     """
-    config_path = Path('config.json')
-    if not config_path.exists():
-        logger.error("Config file 'config.json' not found!")
-        logger.error("Please create config.json from config.json.template:")
-        logger.error("  1. Copy config.json.template to config.json")
-        logger.error("  2. Add your refresh_token and client_id")
-        logger.error("  3. See GETTING_REFRESH_TOKEN.md for instructions on obtaining tokens")
-        return False
-    return True
+    if not SUPABASE_PATH.exists():
+        logger.debug(f"Supabase file not found at {SUPABASE_PATH}")
+        return None, None
+
+    try:
+        with open(SUPABASE_PATH, 'r') as f:
+            supabase_data = json.load(f)
+    except Exception as e:
+        logger.debug(f"Error reading supabase.json: {e}")
+        return None, None
+
+    # Parse the workos_tokens JSON string
+    workos_tokens_str = supabase_data.get('workos_tokens')
+    if not workos_tokens_str:
+        logger.debug("workos_tokens not found in supabase.json")
+        return None, None
+
+    try:
+        workos_tokens = json.loads(workos_tokens_str)
+    except Exception as e:
+        logger.debug(f"Error parsing workos_tokens: {e}")
+        return None, None
+
+    # Extract refresh_token
+    refresh_token = workos_tokens.get('refresh_token')
+    if not refresh_token:
+        logger.debug("refresh_token not found in workos_tokens")
+        return None, None
+
+    # Extract client_id from JWT access_token
+    access_token = workos_tokens.get('access_token')
+    client_id = None
+
+    if access_token:
+        parts = access_token.split('.')
+        if len(parts) == 3:
+            # Add padding if needed for base64 decoding
+            payload = parts[1]
+            padding = 4 - len(payload) % 4
+            if padding != 4:
+                payload += '=' * padding
+
+            try:
+                decoded = base64.urlsafe_b64decode(payload)
+                jwt_payload = json.loads(decoded)
+                # Extract client_id from iss field
+                iss = jwt_payload.get('iss', '')
+                match = re.search(r'client_[^"/]+', iss)
+                if match:
+                    client_id = match.group(0)
+            except Exception as e:
+                logger.debug(f"Error decoding JWT: {e}")
+
+    return refresh_token, client_id
+
+
+def check_config_exists():
+    """
+    Ensure config.json exists with fresh tokens from Granola's supabase.json.
+    Always extracts fresh tokens on every run to avoid expired token issues.
+
+    Returns:
+        bool: True if config exists with valid tokens, False otherwise
+    """
+    logger.info("Extracting fresh tokens from Granola app...")
+
+    # Always attempt to extract fresh tokens from supabase.json
+    refresh_token, client_id = auto_extract_tokens()
+
+    if refresh_token:
+        # Save fresh tokens to config.json
+        config = {}
+        if CONFIG_PATH.exists():
+            try:
+                with open(CONFIG_PATH, 'r') as f:
+                    config = json.load(f)
+            except Exception:
+                pass
+
+        config['refresh_token'] = refresh_token
+        if client_id:
+            config['client_id'] = client_id
+
+        try:
+            with open(CONFIG_PATH, 'w') as f:
+                json.dump(config, f, indent=2)
+            logger.info(f"Updated {CONFIG_PATH} with fresh tokens")
+            logger.debug(f"  refresh_token: {refresh_token[:10]}...")
+            if client_id:
+                logger.debug(f"  client_id: {client_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save config: {e}")
+            return False
+
+    # Fall back to existing config.json if supabase.json extraction failed
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                config = json.load(f)
+            if config.get('refresh_token'):
+                logger.warning("Could not extract fresh tokens from Granola app, using existing config.json")
+                return True
+        except Exception as e:
+            logger.warning(f"Error reading existing config: {e}")
+
+    logger.error("Failed to obtain tokens")
+    logger.error(f"Looked for Granola app data at: {SUPABASE_PATH}")
+    logger.error("")
+    logger.error("Please ensure Granola is installed and you've logged in at least once,")
+    logger.error("or manually create config.json:")
+    logger.error("  1. Copy config.json.template to config.json")
+    logger.error("  2. Add your refresh_token and client_id")
+    logger.error("  3. See GETTING_REFRESH_TOKEN.md for instructions on obtaining tokens")
+    return False
 
 def fetch_granola_documents(token, limit=100):
     """
