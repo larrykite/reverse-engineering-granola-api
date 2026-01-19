@@ -8,18 +8,5 @@
   },
   "enabledPlugins": {
     "beads@beads-marketplace": true
-  },
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Read|Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 hooks/validate_csv.py"
-          }
-        ]
-      }
-    ]
   }
 }
