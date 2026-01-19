@@ -1,6 +1,14 @@
+---
+description: Query or modify CSV/TSV files with automatic validation
+allowed-tools: Read, Write, Edit, Bash
+argument-hint: <file_path> <your request>
+---
+
 # CSV/TSV File Operations
 
-You are helping the user work with a CSV or TSV file. The file path is: `$ARGUMENTS`
+You are helping the user work with a CSV or TSV file. The file path is: `$1`
+
+The user's request is: $ARGUMENTS
 
 ## Instructions
 
@@ -29,10 +37,6 @@ You are helping the user work with a CSV or TSV file. The file path is: `$ARGUME
    - **For queries**: Output results to the console. If the user asks, also save to a file.
    - **For modifications**: Create a NEW file by default (e.g., `original_modified.csv`). Only overwrite the original if the user explicitly requests it.
    - Preserve the original file's encoding and format unless the user requests a change.
-
-## User's Request
-
-$PROMPT
 
 ## Important Notes
 
