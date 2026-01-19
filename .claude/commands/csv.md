@@ -2,6 +2,12 @@
 description: Query or modify CSV/TSV files with automatic validation
 allowed-tools: Read, Write, Edit, Bash
 argument-hint: <file_path> <your request>
+hooks:
+  PostToolUse:
+    - matcher: "Read|Write|Edit"
+      hooks:
+        - type: command
+          command: "python3 hooks/validate_csv.py"
 ---
 
 # CSV/TSV File Operations
@@ -12,13 +18,7 @@ The user's request is: $ARGUMENTS
 
 ## Instructions
 
-1. **First, run the validator** to understand the file structure:
-
-```bash
-echo '{"tool_name": "Read", "tool_input": {"file_path": "$1"}}' | python3 hooks/validate_csv.py
-```
-
-This will provide you with:
+1. **First, read the file** using the Read tool. The PostToolUse hook will automatically run the CSV validator and provide you with:
    - File encoding (UTF-8, UTF-16, etc.)
    - Format detection (CSV vs TSV)
    - Delimiter detection
