@@ -1,0 +1,10 @@
+{
+  "enabledPlugins": {
+    "beads@beads-marketplace": true
+  },
+  "permissions": {
+    "allow": [
+      "Skill(beads:sync)"
+    ]
+  }
+}
